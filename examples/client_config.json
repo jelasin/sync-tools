@@ -1,0 +1,33 @@
+{
+  "client": {
+    "local_dir": "./client_files",
+    "sync_json": "./client_sync_state.json",
+    "server_address": "127.0.0.1:9999",
+    "timeout": 30,
+    "retry_count": 3,
+    "encryption": {
+      "enabled": true,
+      "key_file": "./client.key",
+      "algorithm": "Fernet"
+    },
+    "ui": {
+      "show_progress": true,
+      "progress_style": "bar"
+    }
+  },
+  "sync": {
+    "exclude_patterns": [
+      "*.tmp", 
+      "*.log", 
+      ".git/*",
+      "__pycache__/*",
+      "*.pyc",
+      "node_modules/*",
+      ".DS_Store",
+      "Thumbs.db"
+    ],
+    "include_hidden": false,
+    "compression": false,
+    "chunk_size": 8192
+  }
+}

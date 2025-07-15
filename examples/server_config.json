@@ -1,0 +1,29 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 9999,
+    "sync_dir": "./server_files",
+    "sync_json": "./server_sync_state.json",
+    "max_connections": 10,
+    "encryption": {
+      "enabled": true,
+      "key_file": "./server.key",
+      "algorithm": "Fernet"
+    }
+  },
+  "sync": {
+    "exclude_patterns": [
+      "*.tmp", 
+      "*.log", 
+      ".git/*",
+      "__pycache__/*",
+      "*.pyc",
+      "node_modules/*",
+      ".DS_Store",
+      "Thumbs.db"
+    ],
+    "include_hidden": false,
+    "compression": false,
+    "chunk_size": 8192
+  }
+}
