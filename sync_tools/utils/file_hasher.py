@@ -60,12 +60,14 @@ class FileHasher:
             file_path: 文件绝对路径
             
         Returns:
-            相对路径字符串
+            相对路径字符串（统一使用正斜杠分隔符）
         """
         try:
-            return str(file_path.relative_to(self.base_dir))
+            relative_path = file_path.relative_to(self.base_dir)
+            # 统一使用正斜杠分隔符，确保跨平台兼容性
+            return str(relative_path).replace(os.sep, '/')
         except ValueError:
-            return str(file_path)
+            return str(file_path).replace(os.sep, '/')
     
     def scan_directory(self) -> Dict[str, Dict]:
         """

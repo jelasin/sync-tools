@@ -26,6 +26,19 @@ except ImportError:
     FileTransferProgress = None
 
 
+def normalize_path(path: str) -> str:
+    """
+    标准化路径分隔符，统一使用正斜杠
+    
+    Args:
+        path: 原始路径
+        
+    Returns:
+        标准化后的路径
+    """
+    return path.replace(os.sep, '/').replace('\\', '/')
+
+
 class SyncProtocol:
     """同步协议类"""
     
@@ -165,6 +178,8 @@ class SyncCore:
         Returns:
             发送是否成功
         """
+        # 标准化路径，确保跨平台兼容性
+        normalized_path = normalize_path(file_path)
         full_path = self.base_dir / file_path
         
         if not full_path.exists() or not full_path.is_file():
@@ -182,9 +197,9 @@ class SyncCore:
             if self.encryption_manager:
                 file_data = self.encryption_manager.encrypt_data(file_data)
             
-            # 发送文件信息
+            # 发送文件信息（使用标准化路径）
             file_info = {
-                'path': file_path,
+                'path': normalized_path,
                 'size': file_size,
                 'hash': self.hasher.calculate_file_hash(full_path),
                 'encrypted': self.encryption_manager is not None,
@@ -249,7 +264,11 @@ class SyncCore:
         is_encrypted = file_info.get('encrypted', False)
         encrypted_size = file_info.get('encrypted_size', file_size)  # 加密后的大小
         
-        full_path = self.base_dir / file_path
+        # 标准化路径并转换为本地路径分隔符
+        normalized_path = normalize_path(file_path)
+        # 将标准化路径转换为本地系统路径
+        local_file_path = normalized_path.replace('/', os.sep)
+        full_path = self.base_dir / local_file_path
         
         try:
             # 确保目录存在
@@ -346,7 +365,10 @@ class SyncCore:
         Returns:
             创建是否成功
         """
-        full_path = self.base_dir / dir_path
+        # 标准化路径并转换为本地路径分隔符
+        normalized_path = normalize_path(dir_path)
+        local_dir_path = normalized_path.replace('/', os.sep)
+        full_path = self.base_dir / local_dir_path
         
         try:
             full_path.mkdir(parents=True, exist_ok=True)
@@ -366,7 +388,10 @@ class SyncCore:
         Returns:
             删除是否成功
         """
-        full_path = self.base_dir / file_path
+        # 标准化路径并转换为本地路径分隔符
+        normalized_path = normalize_path(file_path)
+        local_file_path = normalized_path.replace('/', os.sep)
+        full_path = self.base_dir / local_file_path
         
         try:
             if full_path.exists():

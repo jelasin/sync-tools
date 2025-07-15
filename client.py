@@ -11,17 +11,17 @@ import json
 import sys
 from pathlib import Path
 from typing import Dict
-from sync_core import SyncCore, SyncProtocol
-from config_manager import ConfigManager
+from sync_tools.core.sync_core import SyncCore, SyncProtocol
+from sync_tools.utils.config_manager import ConfigManager
 
 try:
-    from encryption import EncryptionManager, CRYPTO_AVAILABLE
+    from sync_tools.utils.encryption import EncryptionManager, CRYPTO_AVAILABLE
 except ImportError:
     CRYPTO_AVAILABLE = False
     EncryptionManager = None
 
 try:
-    from progress import FileTransferProgress, create_progress_manager
+    from sync_tools.utils.progress import FileTransferProgress, create_progress_manager
 except ImportError:
     FileTransferProgress = None
     create_progress_manager = None
