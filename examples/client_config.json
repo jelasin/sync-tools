@@ -2,9 +2,10 @@
   "client": {
     "local_dir": "./client_files",
     "sync_json": "./client_sync_state.json",
-    "server_address": "127.0.0.1:9999",
+    "server_address": "127.0.0.1:10001",
     "timeout": 30,
     "retry_count": 3,
+    "conflict_strategy": "ask",
     "encryption": {
       "enabled": true,
       "key_file": "./client.key",
@@ -27,7 +28,7 @@
       "Thumbs.db"
     ],
     "include_hidden": false,
-    "compression": false,
-    "chunk_size": 8192
+    "compression": true,
+    "chunk_size": 65536
   }
 }

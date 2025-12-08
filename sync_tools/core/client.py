@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 文件同步客户端
-连接服务端并执行文件同步操作，支持配置文件、加密和进度显示
+支持正确的删除同步、版本控制和冲突检测
 """
 
 import socket
@@ -10,8 +10,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Dict
-from sync_tools.core.sync_core import SyncCore, SyncProtocol
+from typing import Dict, List, Optional
+from sync_tools.core.sync_core import SyncCore, SyncProtocol, SyncAction, SyncItem, SyncPlanner
 from sync_tools.utils.config_manager import ConfigManager
 
 try:
@@ -45,6 +45,9 @@ class SyncClient:
         self.server_address = client_config.get("server_address", "127.0.0.1:8888")
         self.timeout = client_config.get("timeout", 30)
         self.retry_count = client_config.get("retry_count", 3)
+        
+        # 冲突处理策略: 'ask', 'local', 'remote', 'skip'
+        self.conflict_strategy = client_config.get("conflict_strategy", "ask")
         
         # 初始化加密管理器
         self.encryption_manager = None
@@ -83,23 +86,18 @@ class SyncClient:
     def connect(self, server_host: str, server_port: int) -> bool:
         """
         连接到服务端
-        
-        Args:
-            server_host: 服务端地址
-            server_port: 服务端端口
-            
-        Returns:
-            连接是否成功
         """
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(self.timeout)
             self.socket.connect((server_host, server_port))
             
             # 发送Hello握手
             client_info = {
                 "name": "SyncClient",
-                "version": "1.0",
-                "local_dir": str(self.local_dir)
+                "version": "2.0",
+                "local_dir": str(self.local_dir),
+                "client_id": self.sync_core.hasher.client_id
             }
             
             hello_data = json.dumps(client_info).encode('utf-8')
@@ -126,189 +124,249 @@ class SyncClient:
             self.socket.close()
             self.socket = None
     
-    def get_server_state(self) -> Dict:
+    def get_server_state(self) -> tuple:
         """
-        获取服务端文件状态
+        获取服务端文件状态和版本号
         
         Returns:
-            服务端文件状态字典
+            (服务端文件状态字典, 服务端版本号)
         """
         try:
             if not self.socket:
                 raise Exception("未连接到服务端")
-                
-            # 发送获取状态请求
+            
             msg = SyncProtocol.pack_message(SyncProtocol.CMD_GET_STATE)
             self.socket.sendall(msg)
             
-            # 接收响应
             cmd, data = SyncProtocol.unpack_message(self.socket)
             if cmd == SyncProtocol.CMD_OK:
-                server_state = json.loads(data.decode('utf-8'))
-                print(f"获取服务端状态成功，包含 {len(server_state)} 个文件")
-                return server_state
+                response = json.loads(data.decode('utf-8'))
+                server_state = response.get('files', {})
+                server_version = response.get('version', 0)
+                print(f"获取服务端状态成功，版本: {server_version}，文件数: {len(server_state)}")
+                return server_state, server_version
             else:
                 print(f"获取服务端状态失败: {cmd}")
-                return {}
+                return {}, 0
                 
         except Exception as e:
             print(f"获取服务端状态失败: {e}")
-            return {}
+            return {}, 0
     
     def push_to_server(self) -> bool:
         """
-        推送本地文件到服务端
+        推送本地变更到服务端
         
-        Returns:
-            推送是否成功
+        实现逻辑：
+        1. 获取本地当前状态和上次同步的基准版本
+        2. 获取服务端当前状态和版本号
+        3. 计算需要上传、删除的文件
+        4. 检测冲突
+        5. 执行同步操作
         """
         try:
-            # 获取本地状态
-            local_state = self.sync_core.prepare_sync_data()
-            print(f"本地文件数量: {len(local_state)}")
+            print("\n" + "="*50)
+            print("开始推送到服务端...")
+            print("="*50)
             
             if not self.socket:
                 raise Exception("未连接到服务端")
+            
+            # 获取本地状态
+            local_state = self.sync_core.prepare_sync_data()
+            local_base_version = self.sync_core.get_base_version()
+            print(f"本地文件数量: {len(local_state)}")
+            print(f"本地基准版本: {local_base_version}")
             
             # 发送同步请求
             sync_request = {
                 'mode': 'push',
-                'client_state': local_state
+                'client_state': local_state,
+                'base_version': local_base_version,
+                'client_id': self.sync_core.hasher.client_id
             }
             
             request_data = json.dumps(sync_request).encode('utf-8')
             msg = SyncProtocol.pack_message(SyncProtocol.CMD_SYNC_REQUEST, request_data)
             self.socket.sendall(msg)
             
-            # 接收同步计划
+            # 接收服务端响应
             cmd, data = SyncProtocol.unpack_message(self.socket)
+            
+            if cmd == SyncProtocol.CMD_CONFLICT:
+                # 服务端检测到版本冲突
+                conflict_info = json.loads(data.decode('utf-8'))
+                print(f"\n[冲突] 服务端版本已更新")
+                print(f"  您的基准版本: {local_base_version}")
+                print(f"  服务端当前版本: {conflict_info.get('server_version', '?')}")
+                print(f"  冲突文件: {conflict_info.get('conflicts', [])}")
+                
+                if self.conflict_strategy == 'skip':
+                    print("根据配置策略，跳过此次推送")
+                    return False
+                elif self.conflict_strategy == 'local':
+                    print("根据配置策略，强制使用本地版本...")
+                    return self._force_push()
+                else:
+                    print("\n建议先执行 pull 获取最新版本，解决冲突后再 push")
+                    return False
+            
             if cmd != SyncProtocol.CMD_OK:
                 print(f"服务端拒绝同步请求: {cmd}")
                 return False
             
             sync_plan = json.loads(data.decode('utf-8'))
-            server_state = sync_plan['server_state']
-            # 在推送模式下，映射关系是对应的
-            files_to_send = sync_plan['files_to_receive']     # 客户端需要发送的文件
-            files_to_receive = sync_plan['files_to_send']     # 客户端需要接收的文件
+            server_version = sync_plan.get('server_version', 0)
+            files_to_upload = sync_plan.get('files_to_upload', [])
+            files_to_delete = sync_plan.get('files_to_delete', [])
             
-            print(f"同步计划: 发送 {len(files_to_send)} 个文件，接收 {len(files_to_receive)} 个文件")
+            print(f"\n同步计划:")
+            print(f"  - 上传文件: {len(files_to_upload)}")
+            print(f"  - 删除远程文件: {len(files_to_delete)}")
             
-            # 发送文件
-            success_count = 0
-            for file_path in files_to_send:
+            # 上传文件
+            upload_success = 0
+            for file_path in files_to_upload:
+                print(f"\n上传: {file_path}")
                 if self.sync_core.send_file(self.socket, file_path):
-                    success_count += 1
+                    upload_success += 1
             
-            print(f"推送完成: {success_count}/{len(files_to_send)} 个文件成功")
+            # 删除远程文件
+            delete_success = 0
+            for file_path in files_to_delete:
+                print(f"\n删除远程: {file_path}")
+                if self.sync_core.send_delete_request(self.socket, file_path):
+                    delete_success += 1
             
-            # 接收服务端发送的文件
-            if files_to_receive:
-                print("接收服务端文件...")
-                for file_path in files_to_receive:
-                    # 这里需要实现接收逻辑，当前简化处理
-                    pass
+            # 发送同步完成信号
+            complete_data = json.dumps({
+                'uploaded': upload_success,
+                'deleted': delete_success
+            }).encode('utf-8')
+            msg = SyncProtocol.pack_message(SyncProtocol.CMD_SYNC_COMPLETE, complete_data)
+            self.socket.sendall(msg)
             
-            # 更新本地状态
-            self.sync_core.hasher.update_state()
-            return True
+            # 接收新版本号
+            cmd, data = SyncProtocol.unpack_message(self.socket)
+            if cmd == SyncProtocol.CMD_OK:
+                result = json.loads(data.decode('utf-8'))
+                new_version = result.get('new_version', server_version)
+                
+                # 更新本地状态
+                self.sync_core.update_after_sync(new_version)
+                
+                print(f"\n推送完成!")
+                print(f"  上传成功: {upload_success}/{len(files_to_upload)}")
+                print(f"  删除成功: {delete_success}/{len(files_to_delete)}")
+                print(f"  新版本号: {new_version}")
+                return True
+            
+            return False
             
         except Exception as e:
             print(f"推送失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+    
+    def _force_push(self) -> bool:
+        """强制推送（忽略冲突）"""
+        # TODO: 实现强制推送逻辑
+        print("强制推送功能尚未实现")
+        return False
     
     def pull_from_server(self) -> bool:
         """
-        从服务端拉取文件
+        从服务端拉取变更
         
-        Returns:
-            拉取是否成功
+        实现逻辑：
+        1. 获取服务端当前状态
+        2. 比较本地状态和服务端状态
+        3. 下载服务端的新文件/更新的文件
+        4. 删除服务端已删除的本地文件
         """
         try:
-            print("开始从服务端拉取文件...")
-            
-            # 获取本地状态
-            local_state = self.sync_core.prepare_sync_data()
-            print(f"本地文件数量: {len(local_state)}")
+            print("\n" + "="*50)
+            print("开始从服务端拉取...")
+            print("="*50)
             
             if not self.socket:
                 raise Exception("未连接到服务端")
             
+            # 获取本地状态
+            local_state = self.sync_core.prepare_sync_data()
+            local_base_version = self.sync_core.get_base_version()
+            print(f"本地文件数量: {len(local_state)}")
+            print(f"本地基准版本: {local_base_version}")
+            
             # 发送同步请求
             sync_request = {
                 'mode': 'pull',
-                'client_state': local_state
+                'client_state': local_state,
+                'base_version': local_base_version,
+                'client_id': self.sync_core.hasher.client_id
             }
             
             request_data = json.dumps(sync_request).encode('utf-8')
             msg = SyncProtocol.pack_message(SyncProtocol.CMD_SYNC_REQUEST, request_data)
             self.socket.sendall(msg)
             
-            # 接收同步计划
+            # 接收服务端响应
             cmd, data = SyncProtocol.unpack_message(self.socket)
+            
             if cmd != SyncProtocol.CMD_OK:
                 print(f"服务端拒绝同步请求: {cmd}")
                 return False
             
             sync_plan = json.loads(data.decode('utf-8'))
-            server_state = sync_plan['server_state']
-            # 在拉取模式下，服务端的files_to_send就是客户端需要接收的文件
-            files_to_receive = sync_plan['files_to_send']     # 客户端需要接收的文件  
-            files_to_send = sync_plan['files_to_receive']     # 客户端需要发送的文件
+            server_version = sync_plan.get('server_version', 0)
+            files_to_download = sync_plan.get('files_to_download', [])
+            files_to_delete = sync_plan.get('files_to_delete', [])
             
-            print(f"同步计划: 接收 {len(files_to_receive)} 个文件，发送 {len(files_to_send)} 个文件")
+            print(f"\n同步计划:")
+            print(f"  - 下载文件: {len(files_to_download)}")
+            print(f"  - 删除本地文件: {len(files_to_delete)}")
             
-            # 在拉取模式下，服务端会主动发送文件，客户端只需要接收
-            if files_to_receive:
-                print("等待服务端发送文件...")
-                received_count = 0
-                
-                for _ in range(len(files_to_receive)):
-                    try:
-                        cmd, data = SyncProtocol.unpack_message(self.socket)
-                        if cmd == SyncProtocol.CMD_FILE_DATA:
-                            file_info = json.loads(data.decode('utf-8'))
-                            if self.sync_core.receive_file(self.socket, file_info):
-                                received_count += 1
-                        else:
-                            print(f"收到意外命令: {cmd}")
-                            break
-                    except Exception as e:
-                        print(f"接收文件失败: {e}")
-                        break
-                
-                print(f"拉取完成: {received_count}/{len(files_to_receive)} 个文件成功")
-            else:
-                print("没有需要接收的文件")
-            
-            # 发送客户端文件到服务端（如果有需要）
-            if files_to_send:
-                print("发送本地文件到服务端...")
-                for file_path in files_to_send:
-                    if self.sync_core.send_file(self.socket, file_path):
-                        print(f"发送成功: {file_path}")
+            # 接收文件
+            download_success = 0
+            for file_path in files_to_download:
+                print(f"\n等待接收: {file_path}")
+                try:
+                    cmd, data = SyncProtocol.unpack_message(self.socket)
+                    if cmd == SyncProtocol.CMD_FILE_DATA:
+                        file_info = json.loads(data.decode('utf-8'))
+                        if self.sync_core.receive_file(self.socket, file_info):
+                            download_success += 1
                     else:
-                        print(f"发送失败: {file_path}")
+                        print(f"收到意外命令: {cmd}")
+                except Exception as e:
+                    print(f"接收文件失败: {e}")
+            
+            # 删除本地文件
+            delete_success = 0
+            for file_path in files_to_delete:
+                print(f"\n删除本地: {file_path}")
+                if self.sync_core.delete_file(file_path):
+                    delete_success += 1
             
             # 更新本地状态
-            self.sync_core.hasher.update_state()
+            self.sync_core.update_after_sync(server_version)
+            
+            print(f"\n拉取完成!")
+            print(f"  下载成功: {download_success}/{len(files_to_download)}")
+            print(f"  删除成功: {delete_success}/{len(files_to_delete)}")
+            print(f"  当前版本: {server_version}")
             return True
             
         except Exception as e:
             print(f"拉取失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def sync_with_server(self, mode: str, server_host: str, server_port: int) -> bool:
         """
         与服务端同步
-        
-        Args:
-            mode: 同步模式 ('push' 或 'pull')
-            server_host: 服务端地址
-            server_port: 服务端端口
-            
-        Returns:
-            同步是否成功
         """
         if not self.connect(server_host, server_port):
             return False
@@ -340,23 +398,34 @@ class SyncClient:
         print("\n文件变化检测:")
         changes = self.sync_core.hasher.get_changes()
         
+        has_changes = False
         for change_type, files in changes.items():
-            if files:
+            if files and change_type != 'unchanged':
+                has_changes = True
                 print(f"\n{change_type.upper()}:")
                 for file_path in files:
                     print(f"  {file_path}")
+        
+        if not has_changes:
+            print("没有检测到变化")
+    
+    def show_status(self):
+        """显示同步状态"""
+        print("\n同步状态:")
+        state = self.sync_core.hasher.sync_state
+        print(f"  客户端ID: {state.client_id}")
+        print(f"  基准版本: {state.base_version}")
+        print(f"  上次同步: {state.last_sync_time or '从未同步'}")
+        
+        changes = self.sync_core.hasher.get_local_changes()
+        print(f"\n本地变更:")
+        print(f"  新增: {len(changes['added'])} 个文件")
+        print(f"  修改: {len(changes['modified'])} 个文件")
+        print(f"  删除: {len(changes['deleted'])} 个文件")
 
 
 def parse_server_address(server_str: str) -> tuple:
-    """
-    解析服务端地址
-    
-    Args:
-        server_str: 服务端地址字符串 (格式: host:port)
-        
-    Returns:
-        (host, port) 元组
-    """
+    """解析服务端地址"""
     try:
         if ':' in server_str:
             host, port = server_str.split(':', 1)
@@ -369,13 +438,15 @@ def parse_server_address(server_str: str) -> tuple:
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='文件同步客户端')
+    parser = argparse.ArgumentParser(description='文件同步客户端 v2.0')
     parser.add_argument('--config', '-c', help='配置文件路径')
-    parser.add_argument('--mode', choices=['push', 'pull', 'list', 'changes'], 
+    parser.add_argument('--mode', choices=['push', 'pull', 'list', 'changes', 'status'], 
                        default='list', help='操作模式')
     parser.add_argument('--local-dir', help='本地同步目录（覆盖配置文件）')
     parser.add_argument('--sync-json', help='同步状态文件（覆盖配置文件）')
     parser.add_argument('--server', help='服务端地址（覆盖配置文件）')
+    parser.add_argument('--conflict', choices=['ask', 'local', 'remote', 'skip'],
+                       default='ask', help='冲突处理策略')
     
     args = parser.parse_args()
     
@@ -389,6 +460,8 @@ def main():
         config_manager.config['client']['sync_json'] = args.sync_json
     if args.server:
         config_manager.config['client']['server_address'] = args.server
+    if args.conflict:
+        config_manager.config['client']['conflict_strategy'] = args.conflict
     
     # 验证配置
     if not config_manager.validate_config(for_server=False):
@@ -401,15 +474,14 @@ def main():
         client.list_local_files()
     elif args.mode == 'changes':
         client.show_changes()
+    elif args.mode == 'status':
+        client.show_status()
     elif args.mode in ['push', 'pull']:
         try:
-            # 从配置获取服务端地址
             server_address = client.server_address
             host, port = parse_server_address(server_address)
             
-            # 启动总体进度跟踪
             if client.progress_manager:
-                # 先获取要同步的文件数量
                 local_state = client.sync_core.prepare_sync_data()
                 client.progress_manager.start_overall_progress(
                     len(local_state), 
@@ -418,21 +490,22 @@ def main():
             
             success = client.sync_with_server(args.mode, host, port)
             
-            # 结束总体进度跟踪
             if client.progress_manager:
                 client.progress_manager.finish_overall_progress()
             
             if success:
-                print(f"{args.mode} 操作完成")
+                print(f"\n{args.mode} 操作完成")
                 sys.exit(0)
             else:
-                print(f"{args.mode} 操作失败")
+                print(f"\n{args.mode} 操作失败")
                 sys.exit(1)
         except ValueError as e:
             print(f"错误: {e}")
             sys.exit(1)
         except Exception as e:
             print(f"同步过程中发生错误: {e}")
+            import traceback
+            traceback.print_exc()
             if client.progress_manager:
                 client.progress_manager.finish_overall_progress()
             sys.exit(1)
