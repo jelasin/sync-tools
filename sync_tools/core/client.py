@@ -220,23 +220,32 @@ class SyncClient:
             files_to_upload = sync_plan.get('files_to_upload', [])
             files_to_delete = sync_plan.get('files_to_delete', [])
             
+            total_tasks = len(files_to_upload) + len(files_to_delete)
             print(f"\n同步计划:")
             print(f"  - 上传文件: {len(files_to_upload)}")
             print(f"  - 删除远程文件: {len(files_to_delete)}")
             
+            # 在获取同步计划后才初始化进度条（使用实际需要操作的文件数）
+            if self.progress_manager and total_tasks > 0:
+                self.progress_manager.start_overall_progress(total_tasks, "PUSH 同步")
+            
             # 上传文件
             upload_success = 0
             for file_path in files_to_upload:
-                print(f"\n上传: {file_path}")
                 if self.sync_core.send_file(self.socket, file_path):
                     upload_success += 1
             
             # 删除远程文件
             delete_success = 0
             for file_path in files_to_delete:
-                print(f"\n删除远程: {file_path}")
                 if self.sync_core.send_delete_request(self.socket, file_path):
                     delete_success += 1
+                    if self.progress_manager:
+                        self.progress_manager.update_overall_progress()
+            
+            # 结束进度跟踪
+            if self.progress_manager and total_tasks > 0:
+                self.progress_manager.finish_overall_progress()
             
             # 发送同步完成信号
             complete_data = json.dumps({
@@ -260,6 +269,9 @@ class SyncClient:
                 print(f"  删除成功: {delete_success}/{len(files_to_delete)}")
                 print(f"  新版本号: {new_version}")
                 return True
+            elif total_tasks == 0:
+                print("\n✓ 文件已是最新状态，无需同步")
+                return True
             
             return False
             
@@ -267,6 +279,8 @@ class SyncClient:
             print(f"推送失败: {e}")
             import traceback
             traceback.print_exc()
+            if self.progress_manager:
+                self.progress_manager.finish_overall_progress()
             return False
     
     def _force_push(self) -> bool:
@@ -323,14 +337,18 @@ class SyncClient:
             files_to_download = sync_plan.get('files_to_download', [])
             files_to_delete = sync_plan.get('files_to_delete', [])
             
+            total_tasks = len(files_to_download) + len(files_to_delete)
             print(f"\n同步计划:")
             print(f"  - 下载文件: {len(files_to_download)}")
             print(f"  - 删除本地文件: {len(files_to_delete)}")
             
+            # 在获取同步计划后才初始化进度条（使用实际需要操作的文件数）
+            if self.progress_manager and total_tasks > 0:
+                self.progress_manager.start_overall_progress(total_tasks, "PULL 同步")
+            
             # 接收文件
             download_success = 0
             for file_path in files_to_download:
-                print(f"\n等待接收: {file_path}")
                 try:
                     cmd, data = SyncProtocol.unpack_message(self.socket)
                     if cmd == SyncProtocol.CMD_FILE_DATA:
@@ -345,9 +363,14 @@ class SyncClient:
             # 删除本地文件
             delete_success = 0
             for file_path in files_to_delete:
-                print(f"\n删除本地: {file_path}")
                 if self.sync_core.delete_file(file_path):
                     delete_success += 1
+                    if self.progress_manager:
+                        self.progress_manager.update_overall_progress()
+            
+            # 结束进度跟踪
+            if self.progress_manager and total_tasks > 0:
+                self.progress_manager.finish_overall_progress()
             
             # 更新本地状态
             self.sync_core.update_after_sync(server_version)
@@ -362,6 +385,8 @@ class SyncClient:
             print(f"拉取失败: {e}")
             import traceback
             traceback.print_exc()
+            if self.progress_manager:
+                self.progress_manager.finish_overall_progress()
             return False
     
     def sync_with_server(self, mode: str, server_host: str, server_port: int) -> bool:
@@ -481,17 +506,8 @@ def main():
             server_address = client.server_address
             host, port = parse_server_address(server_address)
             
-            if client.progress_manager:
-                local_state = client.sync_core.prepare_sync_data()
-                client.progress_manager.start_overall_progress(
-                    len(local_state), 
-                    f"{args.mode.upper()} 同步"
-                )
-            
+            # 进度条会在 push/pull 方法中根据实际同步文件数初始化
             success = client.sync_with_server(args.mode, host, port)
-            
-            if client.progress_manager:
-                client.progress_manager.finish_overall_progress()
             
             if success:
                 print(f"\n{args.mode} 操作完成")
@@ -506,8 +522,6 @@ def main():
             print(f"同步过程中发生错误: {e}")
             import traceback
             traceback.print_exc()
-            if client.progress_manager:
-                client.progress_manager.finish_overall_progress()
             sys.exit(1)
     else:
         print(f"不支持的操作模式: {args.mode}")

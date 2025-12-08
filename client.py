@@ -192,7 +192,12 @@ class SyncClient:
             files_to_send = sync_plan['files_to_receive']     # 客户端需要发送的文件
             files_to_receive = sync_plan['files_to_send']     # 客户端需要接收的文件
             
+            total_tasks = len(files_to_send) + len(files_to_receive)
             print(f"同步计划: 发送 {len(files_to_send)} 个文件，接收 {len(files_to_receive)} 个文件")
+            
+            # 在获取同步计划后才初始化进度条（使用实际需要传输的文件数）
+            if self.progress_manager and total_tasks > 0:
+                self.progress_manager.start_overall_progress(total_tasks, "PUSH 同步")
             
             # 发送文件
             success_count = 0
@@ -209,12 +214,20 @@ class SyncClient:
                     # 这里需要实现接收逻辑，当前简化处理
                     pass
             
+            # 结束进度跟踪
+            if self.progress_manager and total_tasks > 0:
+                self.progress_manager.finish_overall_progress()
+            elif total_tasks == 0:
+                print("✓ 文件已是最新状态，无需同步")
+            
             # 更新本地状态
             self.sync_core.hasher.update_state()
             return True
             
         except Exception as e:
             print(f"推送失败: {e}")
+            if self.progress_manager:
+                self.progress_manager.finish_overall_progress()
             return False
     
     def pull_from_server(self) -> bool:
@@ -256,7 +269,12 @@ class SyncClient:
             files_to_receive = sync_plan['files_to_send']     # 客户端需要接收的文件  
             files_to_send = sync_plan['files_to_receive']     # 客户端需要发送的文件
             
+            total_tasks = len(files_to_receive) + len(files_to_send)
             print(f"同步计划: 接收 {len(files_to_receive)} 个文件，发送 {len(files_to_send)} 个文件")
+            
+            # 在获取同步计划后才初始化进度条（使用实际需要传输的文件数）
+            if self.progress_manager and total_tasks > 0:
+                self.progress_manager.start_overall_progress(total_tasks, "PULL 同步")
             
             # 在拉取模式下，服务端会主动发送文件，客户端只需要接收
             if files_to_receive:
@@ -290,12 +308,20 @@ class SyncClient:
                     else:
                         print(f"发送失败: {file_path}")
             
+            # 结束进度跟踪
+            if self.progress_manager and total_tasks > 0:
+                self.progress_manager.finish_overall_progress()
+            elif total_tasks == 0:
+                print("✓ 文件已是最新状态，无需同步")
+            
             # 更新本地状态
             self.sync_core.hasher.update_state()
             return True
             
         except Exception as e:
             print(f"拉取失败: {e}")
+            if self.progress_manager:
+                self.progress_manager.finish_overall_progress()
             return False
     
     def sync_with_server(self, mode: str, server_host: str, server_port: int) -> bool:
@@ -407,34 +433,20 @@ def main():
             server_address = client.server_address
             host, port = parse_server_address(server_address)
             
-            # 启动总体进度跟踪
-            if client.progress_manager:
-                # 先获取要同步的文件数量
-                local_state = client.sync_core.prepare_sync_data()
-                client.progress_manager.start_overall_progress(
-                    len(local_state), 
-                    f"{args.mode.upper()} 同步"
-                )
-            
+            # 进度条会在 push/pull 方法中根据实际同步文件数初始化
             success = client.sync_with_server(args.mode, host, port)
             
-            # 结束总体进度跟踪
-            if client.progress_manager:
-                client.progress_manager.finish_overall_progress()
-            
             if success:
-                print(f"{args.mode} 操作完成")
+                print(f"\n{args.mode} 操作完成")
                 sys.exit(0)
             else:
-                print(f"{args.mode} 操作失败")
+                print(f"\n{args.mode} 操作失败")
                 sys.exit(1)
         except ValueError as e:
             print(f"错误: {e}")
             sys.exit(1)
         except Exception as e:
             print(f"同步过程中发生错误: {e}")
-            if client.progress_manager:
-                client.progress_manager.finish_overall_progress()
             sys.exit(1)
     else:
         print(f"不支持的操作模式: {args.mode}")
