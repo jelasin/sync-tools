@@ -318,41 +318,46 @@ class SyncPlanner:
         local_hash, remote_hash,
         local_version, remote_version
     ) -> Optional[Tuple[SyncAction, Optional[str]]]:
-        """计算Pull模式下的动作"""
+        """
+        计算Pull模式下的动作
         
+        Pull模式下，远端是权威源：
+        - 远端有新文件 → 下载
+        - 远端文件内容不同 → 下载（远端优先）
+        - 远端文件已删除 → 删除本地
+        """
+        
+        # 远端有，本地没有 → 下载
         if remote_info and not local_info:
             if remote_status == 'active':
                 return (SyncAction.DOWNLOAD, None)
             else:
                 return None
         
+        # 远端没有，本地有 → 保持不变（Pull不会删除远端没有的本地文件）
         if not remote_info and local_info:
             return None
         
+        # 两边都有
         if local_info and remote_info:
+            # 本地活跃，远端活跃
             if local_status == 'active' and remote_status == 'active':
                 if local_hash == remote_hash:
+                    # hash相同，无需操作
                     return None
                 else:
-                    if remote_version > local_version:
-                        return (SyncAction.DOWNLOAD, None)
-                    elif local_version > remote_version:
-                        return None
-                    else:
-                        return (SyncAction.CONFLICT, "版本相同但内容不同")
-            
-            elif local_status == 'deleted' and remote_status == 'active':
-                if remote_version > local_version:
+                    # hash不同，Pull模式下直接下载远端版本（远端优先）
                     return (SyncAction.DOWNLOAD, None)
-                else:
-                    return None
             
+            # 本地删除，远端活跃 → 下载远端版本（恢复文件）
+            elif local_status == 'deleted' and remote_status == 'active':
+                return (SyncAction.DOWNLOAD, None)
+            
+            # 本地活跃，远端删除 → 删除本地（远端优先）
             elif local_status == 'active' and remote_status == 'deleted':
-                if remote_version > local_version:
-                    return (SyncAction.DELETE_LOCAL, None)
-                else:
-                    return None
+                return (SyncAction.DELETE_LOCAL, None)
             
+            # 两边都删除 → 无需操作
             else:
                 return None
         

@@ -374,9 +374,39 @@ class FileHasher:
         return result
     
     def update_state(self):
-        """更新状态到最新（兼容旧API）"""
+        """
+        更新状态到最新（兼容旧API）
+        
+        重要：保留删除标记（tombstone），以便其他客户端能够同步删除操作
+        """
         current_files = self.scan_directory()
-        self.sync_state.files = current_files
+        
+        # 保留已有的 tombstone，并为新删除的文件创建 tombstone
+        new_state = {}
+        
+        # 添加当前存在的文件
+        for path, info in current_files.items():
+            new_state[path] = info
+        
+        # 处理之前存在但现在不存在的文件（创建或保留 tombstone）
+        for path, info in self.sync_state.files.items():
+            if path not in current_files:
+                if info.status == 'deleted':
+                    # 保留已有的 tombstone
+                    new_state[path] = info
+                elif info.status == 'active':
+                    # 创建新的 tombstone
+                    tombstone = FileInfo(
+                        hash='',
+                        size=0,
+                        modified=datetime.now().isoformat(),
+                        version=info.version + 1,
+                        status='deleted',
+                        deleted_at=datetime.now().isoformat()
+                    )
+                    new_state[path] = tombstone
+        
+        self.sync_state.files = new_state
         self.sync_state.last_sync_time = datetime.now().isoformat()
         self.save_state()
 

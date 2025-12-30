@@ -311,6 +311,12 @@ class SyncServer:
         current_version: int
     ):
         """处理Push请求"""
+        # 先更新服务端状态，确保状态是最新的
+        self.sync_core.hasher.update_state()
+        
+        # 重新获取服务端状态
+        server_state = self.sync_core.prepare_sync_data()
+        
         # 检测版本冲突
         if client_base_version < current_version and client_base_version > 0:
             # 有人在客户端上次同步后推送了更改
@@ -366,6 +372,12 @@ class SyncServer:
         current_version: int
     ):
         """处理Pull请求"""
+        # 先更新服务端状态，确保 tombstone 被正确记录
+        self.sync_core.hasher.update_state()
+        
+        # 重新获取服务端状态（包含最新的 tombstone）
+        server_state = self.sync_core.prepare_sync_data()
+        
         # 计算同步计划
         sync_items, _ = SyncPlanner.compute_sync_plan(
             client_state, server_state,
